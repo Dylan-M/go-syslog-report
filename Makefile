@@ -18,7 +18,7 @@ GEN = go run ./cmd/gen -lib $(LIB) -known3164 "$(KNOWN_3164)" -known5424 "$(KNOW
 define report
 	$(GEN); \
 	tags="generated"; test -d $(LIB)/auto && tags="$$tags use_auto"; \
-	echo "build tags: $$tags"; \
+	echo "build tags: $$tags" >&2; \
 	go run -tags "$$tags" ./cmd/report -catalog $(CATALOG) -label "$(1)" $(if $(DUMP),-dump,)
 endef
 

@@ -1,0 +1,56 @@
+name: Release
+
+# Tag-triggered release. Pushing a v* tag builds two conformance reports (the
+# latest go-syslog release and the tip of develop) and attaches them to the
+# GitHub release, named by the go-syslog version each one measured.
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Generate reports
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          make report-release > out/release.txt
+          make report-develop > out/develop.txt
+
+          reltag=$(sed -n 's/^library: *//p' out/release.txt | head -1)
+          devlabel=$(sed -n 's/^library: *//p' out/develop.txt | head -1)
+          devsha=${devlabel#develop@}
+
+          test -n "$reltag" || { echo "could not determine go-syslog release tag"; exit 1; }
+          test -n "$devsha" || { echo "could not determine go-syslog develop sha"; exit 1; }
+
+          mv out/release.txt "out/report-release-${reltag}.txt"
+          mv out/develop.txt "out/report-develop-${devsha}.txt"
+          ls -1 out
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            out/report-release-*.txt out/report-develop-*.txt
