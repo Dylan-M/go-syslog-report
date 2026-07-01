@@ -1,8 +1,8 @@
 name: Release
 
 # Tag-triggered release. Pushing a v* tag compiles the report binary against
-# the latest go-syslog release and attaches it, named for that go-syslog
-# version. The binary is self-contained (the catalog is embedded).
+# the latest go-syslog release, runs it to produce a report, and attaches both.
+# The binary is self-contained (the catalog is embedded).
 on:
   push:
     tags:
@@ -28,8 +28,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build release binary
-        run: make report-release VERSION="${GITHUB_REF_NAME}"
+      - name: Build binary and run report
+        run: |
+          set -euo pipefail
+          make report-release VERSION="${GITHUB_REF_NAME}"
+          bin=$(ls bin/report-release-for-gs-*)
+          echo "REL_BIN=$bin" >> "$GITHUB_ENV"
+          echo "REL_TXT=$(basename "$bin").txt" >> "$GITHUB_ENV"
+          "$bin" -catalog catalog.jsonl > "$(basename "$bin").txt"
 
       - name: Create release
         env:
@@ -38,4 +44,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            bin/report-release-for-gs-*
+            "${REL_BIN}" "${REL_TXT}"

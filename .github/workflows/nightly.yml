@@ -1,11 +1,19 @@
 name: Nightly
 
-# Builds a report binary against go-syslog's develop tip and runs it, but only
-# when develop has moved since the last nightly (no published asset for that
-# SHA). Publishes a timestamped pre-release with the binary and the report.
+# Builds a report binary against go-syslog's develop tip, runs it, and publishes
+# a timestamped pre-release with the binary and the report.
+#
+# Scheduled runs build only when develop has moved (no published asset for that
+# SHA), which suits a library that changes infrequently. A change to the catalog
+# (or a manual dispatch) builds unconditionally, since the catalog itself is an
+# input to the report.
 on:
   schedule:
     - cron: '0 6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'catalog.jsonl'
   workflow_dispatch: {}
 
 concurrency:
@@ -36,11 +44,16 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "go-syslog develop is at $sha"
 
-      - name: Skip if this develop SHA was already published
+      - name: Decide whether to build
         id: gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "event=${{ github.event_name }}: building unconditionally (catalog change or manual run)"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           asset="report-develop-for-gs-${{ steps.dev.outputs.sha }}"
           if gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[].assets[].name' | grep -Fxq "$asset"; then
             echo "already published $asset; develop has not moved"
