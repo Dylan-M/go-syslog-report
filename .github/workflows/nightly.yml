@@ -1,0 +1,73 @@
+name: Nightly
+
+# Builds a report binary against go-syslog's develop tip and runs it, but only
+# when develop has moved since the last nightly (no published asset for that
+# SHA). Publishes a timestamped pre-release with the binary and the report.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    name: Nightly develop report
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve go-syslog develop SHA
+        id: dev
+        run: |
+          sha=$(git ls-remote https://github.com/leodido/go-syslog refs/heads/develop | head -1 | cut -c1-12)
+          test -n "$sha" || { echo "could not resolve develop sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "go-syslog develop is at $sha"
+
+      - name: Skip if this develop SHA was already published
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          asset="report-develop-for-gs-${{ steps.dev.outputs.sha }}"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[].assets[].name' | grep -Fxq "$asset"; then
+            echo "already published $asset; develop has not moved"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build develop binary and run report
+        if: steps.gate.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          ts=$(date -u +%Y%m%d-%H%M%S)
+          echo "NIGHTLY_TAG=nightly-$ts" >> "$GITHUB_ENV"
+          make report-develop VERSION="nightly-$ts"
+          bin="bin/report-develop-for-gs-${{ steps.dev.outputs.sha }}"
+          test -x "$bin" || { echo "expected $bin was not built (develop may have moved mid-run)"; exit 1; }
+          "$bin" -catalog catalog.jsonl > "nightly-report-for-${{ steps.dev.outputs.sha }}.txt"
+
+      - name: Publish nightly pre-release
+        if: steps.gate.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${NIGHTLY_TAG}" \
+            --title "${NIGHTLY_TAG}" \
+            --prerelease \
+            --notes "Nightly build against go-syslog develop @ ${{ steps.dev.outputs.sha }}." \
+            "bin/report-develop-for-gs-${{ steps.dev.outputs.sha }}" \
+            "nightly-report-for-${{ steps.dev.outputs.sha }}.txt"

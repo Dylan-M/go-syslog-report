@@ -1,8 +1,9 @@
 # Current state
 
 A snapshot of how completely `leodido/go-syslog` extracts the catalog across the
-4.x line, and the reasons behind each number. Regenerate any row with the
-`make` targets in the README. Figures below are as of 2026-07-01.
+4.x line, and the reasons behind each number. Reproduce any row by building its
+binary with the `make` targets in the README and running it. Figures below are
+as of 2026-07-01.
 
 ## Buckets
 

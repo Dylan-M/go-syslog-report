@@ -9,9 +9,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -21,7 +23,15 @@ import (
 	"github.com/leodido/go-syslog/v4/rfc3164"
 	"github.com/leodido/go-syslog/v4/rfc5424"
 
+	gosyslogreport "github.com/Dylan-M/go-syslog-report"
 	"github.com/Dylan-M/go-syslog-report/internal/profile"
+)
+
+// Set at build time via -ldflags -X. version is this tool's own version;
+// gsVersion is the go-syslog version the binary was compiled against.
+var (
+	version   = "dev"
+	gsVersion = "(unspecified)"
 )
 
 type entry struct {
@@ -140,22 +150,25 @@ func plausibleHost(s string) bool {
 }
 
 func main() {
-	label := flag.String("label", "(unspecified)", "library version label for the report header")
-	catalog := flag.String("catalog", "catalog.jsonl", "path to the variant catalog (JSONL)")
+	catalog := flag.String("catalog", "", "path to a variant catalog (JSONL); overrides the embedded catalog")
 	dump := flag.Bool("dump", false, "print the extracted fields for every FULL result, for validation")
 	flag.Parse()
 
-	f, err := os.Open(*catalog)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	var src io.Reader = bytes.NewReader(gosyslogreport.Catalog)
+	if *catalog != "" {
+		f, err := os.Open(*catalog)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		src = f
 	}
-	defer f.Close()
 
 	m := profile.NewMachine()
 
 	var results []result
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(src)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	for sc.Scan() {
 		var e entry
@@ -170,7 +183,7 @@ func main() {
 		}
 	}
 
-	report(*label, results)
+	report(results)
 	if *dump {
 		dumpFull(results)
 	}
@@ -190,7 +203,7 @@ func dumpFull(rs []result) {
 	}
 }
 
-func report(label string, rs []result) {
+func report(rs []result) {
 	var counts [3]int
 	var pri, priless [3]int
 	for _, r := range rs {
@@ -202,8 +215,8 @@ func report(label string, rs []result) {
 		}
 	}
 
-	fmt.Printf("go-syslog conformance report\n")
-	fmt.Printf("library:   %s\n", label)
+	fmt.Printf("go-syslog-report %s\n", version)
+	fmt.Printf("library:   %s\n", gsVersion)
 	fmt.Printf("generated: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Printf("detection: %s\n", profile.Mode())
 	auto := profile.AutoAdded()
@@ -218,7 +231,7 @@ func report(label string, rs []result) {
 	fmt.Printf("  pri-bearing:  FULL=%d PARTIAL=%d NONE=%d\n", pri[full], pri[partial], pri[none])
 	fmt.Printf("  priorityless: FULL=%d PARTIAL=%d NONE=%d\n\n", priless[full], priless[partial], priless[none])
 
-	fmt.Println("PARTIAL (message returned but incomplete) — the worklist to drive toward FULL:")
+	fmt.Println("PARTIAL (message returned but incomplete), the worklist to drive toward FULL:")
 	printGroup(rs, partial)
 	fmt.Println("\nNONE (nothing extractable):")
 	printGroup(rs, none)

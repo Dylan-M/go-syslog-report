@@ -1,2 +1,3 @@
 /.lib/
+/bin/
 /internal/profile/options_gen.go

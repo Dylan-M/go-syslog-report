@@ -13,26 +13,42 @@ The goal is to shrink PARTIAL and NONE toward FULL over time.
 For the current measured numbers across the 4.x line, and the reasons behind
 them, see [CURRENT_STATE.md](CURRENT_STATE.md).
 
-## How it selects the library version
+## Building report binaries
 
-The harness imports `go-syslog` through a `replace` directive that points at a
-local clone in `.lib/go-syslog`. The Makefile moves that clone's HEAD to
-whatever you want to measure, so one build can target a release, a branch, or an
+Each `make` target **compiles** a self-contained report binary; it does not run
+it. The tool imports `go-syslog` through a `replace` directive pointing at a
+local clone in `.lib/go-syslog`, and the Makefile moves that clone to the
+version you want to measure, so one build can target a release, a branch, or an
 open PR without editing `go.mod`.
 
 ```sh
-make report-release           # the latest published release tag
-make report-release TAG=v4.5.0 # a specific release tag
-make report-develop           # tip of develop
-make report-pr PR=66          # a specific PR's head commit
+make report-release            # latest release  -> bin/report-release-for-gs-<TAG>
+make report-release TAG=v4.2.0 # a specific release tag
+make report-develop            # develop tip     -> bin/report-develop-for-gs-<SHA>
+make report-pr PR=66           # a PR head commit -> bin/report-pr-<N>-for-gs-<SHA>
 ```
 
-`make report-pr PR=<n>` fetches `pull/<n>/head`, pins the exact commit SHA, and
-labels the report with it, so a run is reproducible even if the PR branch later
-moves.
+Binaries land in `bin/`, named for the go-syslog version they were built
+against, with that version and this tool's own version baked in via ldflags (both
+shown in the report header). The catalog is embedded, so a binary is
+self-contained: run it to get the report, or point it at a different catalog.
 
-The clone is created on first use in `.lib/` and is git-ignored. The whole 4.x
-line is supported (v4.0.0 is the floor); see the two sections below for how.
+```sh
+./bin/report-release-for-gs-v4.5.0                           # embedded catalog
+./bin/report-release-for-gs-v4.5.0 -catalog other.jsonl      # override the catalog
+```
+
+`make report-pr PR=<n>` fetches `pull/<n>/head` and pins the exact commit SHA.
+The clone is created on first use in `.lib/` and is git-ignored, as is `bin/`.
+The whole 4.x line is supported (v4.0.0 is the floor); see the sections below.
+
+## Releases
+
+Pushing a `v*` tag compiles `report-release-for-gs-<TAG>` and attaches it to the
+GitHub release. A nightly workflow, when go-syslog's develop has moved, compiles
+`report-develop-for-gs-<SHA>`, runs it against the current catalog, and publishes
+both the binary and a `nightly-report-for-<SHA>.txt` on a timestamped
+pre-release.
 
 ## The catalog
 
@@ -87,7 +103,7 @@ sometimes returns three non-nil fields that are actually a mis-parse (a
 timestamp year or a process tag grabbed as the hostname). The plausibility check
 rejects a trailing colon, brackets, whitespace, a purely numeric value, or
 emptiness. It is a heuristic, not verified correctness; the values are not yet
-checked against ground truth. Add `DUMP=1` to any target (for example
-`make report-release DUMP=1`) to print the extracted fields for every FULL
-result and eyeball them. Adding per-example ground truth is the planned next
-step (see CURRENT_STATE.md).
+checked against ground truth. Run a binary with `-dump` (for example
+`./bin/report-release-for-gs-v4.5.0 -dump`) to print the extracted fields for
+every FULL result and eyeball them. Adding per-example ground truth is the
+planned next step (see CURRENT_STATE.md).
