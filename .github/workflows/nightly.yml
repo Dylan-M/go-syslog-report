@@ -1,12 +1,14 @@
 name: Nightly
 
-# Builds a report binary against go-syslog's develop tip, runs it, and publishes
-# a timestamped pre-release with the binary and the report.
+# Two daily jobs against go-syslog:
+#   nightly       - build+run a report for develop when it has moved, publish a
+#                   timestamped pre-release. A/B-detected reducers among develop's
+#                   unclassified options are excluded from the published report.
+#   watch-release - A/B-classify unclassified options in the latest release and
+#                   file one idempotent issue per option for triage into KNOWN/DENY.
 #
-# Scheduled runs build only when develop has moved (no published asset for that
-# SHA), which suits a library that changes infrequently. A change to the catalog
-# (or a manual dispatch) builds unconditionally, since the catalog itself is an
-# input to the report.
+# Scheduled develop builds run only when develop has moved (no published asset
+# for that SHA). A catalog change or manual dispatch builds unconditionally.
 on:
   schedule:
     - cron: '0 6 * * *'
@@ -22,6 +24,7 @@ concurrency:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   nightly:
@@ -68,7 +71,14 @@ jobs:
           set -euo pipefail
           ts=$(date -u +%Y%m%d-%H%M%S)
           echo "NIGHTLY_TAG=nightly-$ts" >> "$GITHUB_ENV"
-          make report-develop VERSION="nightly-$ts"
+
+          # Exclude A/B-detected reducers among develop's unclassified options.
+          make classify-develop 2>/dev/null > verdicts.jsonl || true
+          r3=$(jq -r 'select(.verdict=="reduces" and .pkg=="rfc3164") | .name' verdicts.jsonl | tr '\n' ' ')
+          r5=$(jq -r 'select(.verdict=="reduces" and .pkg=="rfc5424") | .name' verdicts.jsonl | tr '\n' ' ')
+          [ -n "$r3$r5" ] && echo "excluding detected reducers: 3164=[$r3] 5424=[$r5]"
+
+          make report-develop VERSION="nightly-$ts" EXTRA_DENY_3164="$r3" EXTRA_DENY_5424="$r5"
           bin="bin/report-develop-for-gs-${{ steps.dev.outputs.sha }}"
           test -x "$bin" || { echo "expected $bin was not built (develop may have moved mid-run)"; exit 1; }
           "$bin" -catalog catalog.jsonl > "nightly-report-for-${{ steps.dev.outputs.sha }}.txt"
@@ -84,3 +94,24 @@ jobs:
             --notes "Nightly build against go-syslog develop @ ${{ steps.dev.outputs.sha }}." \
             "bin/report-develop-for-gs-${{ steps.dev.outputs.sha }}" \
             "nightly-report-for-${{ steps.dev.outputs.sha }}.txt"
+
+  watch-release:
+    name: Watch latest release for new options
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Classify unclassified options and file issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          make classify-release 2>/dev/null > verdicts.jsonl || true
+          rel=$(git -C .lib/go-syslog tag -l 'v*' | sort -V | tail -1)
+          bash scripts/file-issues.sh verdicts.jsonl "$rel"
