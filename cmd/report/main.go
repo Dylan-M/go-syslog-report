@@ -66,6 +66,7 @@ type result struct {
 	bucket  bucket
 	missing []string
 	err     string
+	core    int // count of core fields present (timestamp, plausible hostname, message)
 	// extracted values, for -dump validation
 	ts   string
 	host string
@@ -112,6 +113,15 @@ func classify(m profile.Parser, ex string) result {
 		}
 	}
 	hostOK := host && plausibleHost(r.host)
+	if ts {
+		r.core++
+	}
+	if hostOK {
+		r.core++
+	}
+	if message {
+		r.core++
+	}
 	if !ts {
 		r.missing = append(r.missing, "timestamp")
 	}
@@ -227,7 +237,11 @@ func report(rs []result) {
 	}
 
 	total := len(rs)
-	fmt.Printf("TOTALS  examples=%d  FULL=%d  PARTIAL=%d  NONE=%d\n", total, counts[full], counts[partial], counts[none])
+	coreTotal := 0
+	for _, r := range rs {
+		coreTotal += r.core
+	}
+	fmt.Printf("TOTALS  examples=%d  FULL=%d  PARTIAL=%d  NONE=%d  core-fields=%d\n", total, counts[full], counts[partial], counts[none], coreTotal)
 	fmt.Printf("  pri-bearing:  FULL=%d PARTIAL=%d NONE=%d\n", pri[full], pri[partial], pri[none])
 	fmt.Printf("  priorityless: FULL=%d PARTIAL=%d NONE=%d\n\n", priless[full], priless[partial], priless[none])
 

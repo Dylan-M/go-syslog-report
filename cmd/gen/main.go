@@ -108,7 +108,11 @@ func main() {
 		fatal(err)
 	}
 	if *unclassifiedOut != "" {
-		if err := os.WriteFile(*unclassifiedOut, []byte(strings.Join(unclassified, "\n")), 0o644); err != nil {
+		data := strings.Join(unclassified, "\n")
+		if len(unclassified) > 0 {
+			data += "\n"
+		}
+		if err := os.WriteFile(*unclassifiedOut, []byte(data), 0o644); err != nil {
 			fatal(err)
 		}
 	}
