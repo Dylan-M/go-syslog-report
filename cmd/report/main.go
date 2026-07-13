@@ -221,9 +221,9 @@ func report(rs []result) {
 	fmt.Printf("detection: %s\n", profile.Mode())
 	auto := profile.AutoAdded()
 	if len(auto) == 0 {
-		fmt.Printf("auto-added options: (none; release/base profile)\n\n")
+		fmt.Printf("unacknowledged options: (none; all enabled options are in KNOWN)\n\n")
 	} else {
-		fmt.Printf("auto-added options: %s\n\n", strings.Join(auto, ", "))
+		fmt.Printf("unacknowledged options (enabled, not yet in KNOWN): %s\n\n", strings.Join(auto, ", "))
 	}
 
 	total := len(rs)

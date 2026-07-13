@@ -2,12 +2,16 @@
 // measures against, reconciled against the target go-syslog version so it only
 // ever names options that version actually has.
 //
-// For each parser package it emits:
-//   - every "known" option (from the Makefile's KNOWN_* lists) that exists in
-//     the target; a no-arg option is called directly, an arg-taking one uses a
-//     small built-in argument map;
-//   - plus any no-arg With…() MachineOption present in the target but absent
-//     from the latest release (a genuinely new option), reported as auto-added.
+// Model:
+//   - A no-arg With…() MachineOption present in the target is ENABLED unless it
+//     is in the DENY list. So coverage never silently drops when go-syslog adds
+//     a useful option: it is picked up automatically.
+//   - Arg-taking options are enabled only when they have an entry in argExpr
+//     (they need a value); they are otherwise left out.
+//   - KNOWN and DENY are the two hand-maintained "acknowledged" lists (enable
+//     and exclude, respectively). An option in neither, and not an argExpr key,
+//     is "unclassified": still enabled (if no-arg), but written to the
+//     -unclassified file so the nightly can A/B-classify it and file an issue.
 //
 // Because it emits only what the target has, the generated file compiles against
 // any 4.x version. gen imports nothing from go-syslog; it parses source.
@@ -22,7 +26,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,7 +41,7 @@ var pkgs = []pkg{
 }
 
 // argExpr gives the argument expression for arg-taking options we want to wire.
-// Keyed by "alias.Name". Extend when a new arg-taking option enters a KNOWN list.
+// Keyed by "alias.Name". Extend when a new arg-taking option should be enabled.
 var argExpr = map[string]string{
 	"rfc3164.WithYear": "rfc3164.CurrentYear{}",
 }
@@ -46,78 +49,81 @@ var argExpr = map[string]string{
 func main() {
 	lib := flag.String("lib", ".lib/go-syslog", "path to the go-syslog clone (checked out to the target)")
 	out := flag.String("out", "internal/profile/options_gen.go", "generated file path")
-	known3164 := flag.String("known3164", "", "space-separated rfc3164 option names to wire if present")
-	known5424 := flag.String("known5424", "", "space-separated rfc5424 option names to wire if present")
+	known3164 := flag.String("known3164", "", "space-separated rfc3164 options acknowledged as enabled")
+	known5424 := flag.String("known5424", "", "space-separated rfc5424 options acknowledged as enabled")
+	deny3164 := flag.String("deny3164", "", "space-separated rfc3164 options to exclude (extraction reducers)")
+	deny5424 := flag.String("deny5424", "", "space-separated rfc5424 options to exclude")
+	unclassifiedOut := flag.String("unclassified", "", "if set, write unclassified options (JSONL) here for the notifier")
 	flag.Parse()
 
-	knownBy := map[string][]string{
-		"rfc3164": strings.Fields(*known3164),
-		"rfc5424": strings.Fields(*known5424),
-	}
-
-	tag, err := latestTag(*lib)
-	if err != nil {
-		fatal(err)
-	}
-	fmt.Fprintf(os.Stderr, "gen: target dir %s, release baseline %s\n", *lib, tag)
+	knownBy := map[string][]string{"rfc3164": strings.Fields(*known3164), "rfc5424": strings.Fields(*known5424)}
+	denyBy := map[string][]string{"rfc3164": strings.Fields(*deny3164), "rfc5424": strings.Fields(*deny5424)}
 
 	calls := map[string][]string{} // alias -> rendered call expressions
-	var autoAdded []string
+	var unacknowledged []string    // enabled no-arg options not in KNOWN (surfaced in the report header)
+	var unclassified []string      // JSONL lines for the notifier
+
 	for _, p := range pkgs {
 		noArg, argful, err := optionDetails(readFile(*lib + "/" + p.dir + "/options.go"))
 		if err != nil {
-			fatal(fmt.Errorf("%s target: %w", p.dir, err))
+			fatal(fmt.Errorf("%s options: %w", p.dir, err))
 		}
-		targetNoArg := toSet(noArg)
-		targetArg := toSet(argful)
-		release, err := optionNames(gitShow(*lib, tag, p.dir+"/options.go"))
-		if err != nil {
-			fatal(fmt.Errorf("%s release: %w", p.dir, err))
-		}
+		known := toSet(knownBy[p.alias])
+		deny := toSet(denyBy[p.alias])
 
-		emitted := map[string]bool{}
-		for _, name := range knownBy[p.alias] {
-			switch {
-			case targetNoArg[name]:
-				calls[p.alias] = append(calls[p.alias], fmt.Sprintf("%s.%s()", p.alias, name))
-				emitted[name] = true
-			case targetArg[name]:
-				if arg, ok := argExpr[p.alias+"."+name]; ok {
-					calls[p.alias] = append(calls[p.alias], fmt.Sprintf("%s.%s(%s)", p.alias, name, arg))
-					emitted[name] = true
-				} else {
-					fmt.Fprintf(os.Stderr, "gen: WARN known %s.%s takes arguments but has no argExpr; skipped\n", p.alias, name)
-				}
-			default:
-				fmt.Fprintf(os.Stderr, "gen: known %s.%s absent in target; skipped\n", p.alias, name)
-			}
-		}
-		// New no-arg options: present in target, absent from the release.
+		// Enable every no-arg option the target has, except DENY.
 		for _, name := range noArg {
-			if emitted[name] || release[name] {
+			if deny[name] {
 				continue
 			}
 			calls[p.alias] = append(calls[p.alias], fmt.Sprintf("%s.%s()", p.alias, name))
-			autoAdded = append(autoAdded, p.alias+"."+name)
+			if !known[name] {
+				unacknowledged = append(unacknowledged, p.alias+"."+name)
+				unclassified = append(unclassified, jsonl(p.alias, name, true))
+			}
+		}
+		// Enable arg-taking options only when we have an argument for them.
+		for _, name := range argful {
+			key := p.alias + "." + name
+			if deny[name] {
+				continue
+			}
+			if arg, ok := argExpr[key]; ok {
+				calls[p.alias] = append(calls[p.alias], fmt.Sprintf("%s.%s(%s)", p.alias, name, arg))
+				continue
+			}
+			// No argExpr and not acknowledged: a new arg-taking option to flag.
+			if !known[name] {
+				unclassified = append(unclassified, jsonl(p.alias, name, false))
+			}
 		}
 	}
-	sort.Strings(autoAdded)
+	sort.Strings(unacknowledged)
 
-	src, err := render(calls, autoAdded)
+	src, err := render(calls, unacknowledged)
 	if err != nil {
 		fatal(err)
 	}
 	if err := os.WriteFile(*out, src, 0o644); err != nil {
 		fatal(err)
 	}
-	if len(autoAdded) == 0 {
-		fmt.Fprintln(os.Stderr, "gen: no new options beyond the release")
+	if *unclassifiedOut != "" {
+		if err := os.WriteFile(*unclassifiedOut, []byte(strings.Join(unclassified, "\n")), 0o644); err != nil {
+			fatal(err)
+		}
+	}
+	if len(unacknowledged) == 0 {
+		fmt.Fprintln(os.Stderr, "gen: all enabled options are acknowledged (in KNOWN)")
 	} else {
-		fmt.Fprintf(os.Stderr, "gen: auto-added %d option(s): %s\n", len(autoAdded), strings.Join(autoAdded, ", "))
+		fmt.Fprintf(os.Stderr, "gen: enabled but unacknowledged: %s\n", strings.Join(unacknowledged, ", "))
 	}
 }
 
-func render(calls map[string][]string, autoAdded []string) ([]byte, error) {
+func jsonl(alias, name string, noArg bool) string {
+	return fmt.Sprintf(`{"pkg":%q,"name":%q,"noarg":%t}`, alias, name, noArg)
+}
+
+func render(calls map[string][]string, unacknowledged []string) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString("//go:build generated\n\n")
 	b.WriteString("// Code generated by cmd/gen; DO NOT EDIT.\n")
@@ -134,7 +140,7 @@ func render(calls map[string][]string, autoAdded []string) ([]byte, error) {
 	writeFn(&b, "Options5424", calls["rfc5424"])
 
 	b.WriteString("func AutoAdded() []string {\n\treturn []string{")
-	for i, a := range autoAdded {
+	for i, a := range unacknowledged {
 		if i > 0 {
 			b.WriteString(", ")
 		}
@@ -185,14 +191,6 @@ func optionDetails(srcText string) (noArg, argful []string, err error) {
 	return noArg, argful, nil
 }
 
-func optionNames(srcText string) (map[string]bool, error) {
-	noArg, argful, err := optionDetails(srcText)
-	if err != nil {
-		return nil, err
-	}
-	return toSet(append(noArg, argful...)), nil
-}
-
 func returnsMachineOption(fn *ast.FuncDecl) bool {
 	if fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
 		return false
@@ -211,63 +209,6 @@ func toSet(names []string) map[string]bool {
 		m[n] = true
 	}
 	return m
-}
-
-func latestTag(lib string) (string, error) {
-	out, err := run(lib, "tag", "-l", "v*")
-	if err != nil {
-		return "", err
-	}
-	tags := strings.Fields(out)
-	if len(tags) == 0 {
-		return "", fmt.Errorf("no v* tags in %s", lib)
-	}
-	sort.Slice(tags, func(i, j int) bool { return semverLess(tags[i], tags[j]) })
-	return tags[len(tags)-1], nil
-}
-
-func semverLess(a, b string) bool {
-	pa, pb := parseSemver(a), parseSemver(b)
-	for i := 0; i < 3; i++ {
-		if pa[i] != pb[i] {
-			return pa[i] < pb[i]
-		}
-	}
-	return a < b
-}
-
-func parseSemver(tag string) [3]int {
-	var out [3]int
-	parts := strings.SplitN(strings.TrimPrefix(tag, "v"), ".", 3)
-	for i := 0; i < len(parts) && i < 3; i++ {
-		n := 0
-		for _, r := range parts[i] {
-			if r < '0' || r > '9' {
-				break
-			}
-			n = n*10 + int(r-'0')
-		}
-		out[i] = n
-	}
-	return out
-}
-
-func gitShow(lib, tag, path string) string {
-	out, err := run(lib, "show", tag+":"+path)
-	if err != nil {
-		fatal(fmt.Errorf("git show %s:%s: %w", tag, path, err))
-	}
-	return out
-}
-
-func run(lib string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", lib}, args...)...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%v: %s", err, stderr.String())
-	}
-	return stdout.String(), nil
 }
 
 func readFile(path string) string {

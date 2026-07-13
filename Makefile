@@ -3,15 +3,23 @@ REPO    ?= https://github.com/leodido/go-syslog
 # This tool's own version, baked into the binary. Overridden by CI to the tag.
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 
-# The curated "known" options we want, as names. The generator emits only those
-# actually present in the target version, so this compiles against any 4.x.
-# Arg-taking options (e.g. WithYear) get their argument from cmd/gen's argExpr.
+# Two hand-maintained "acknowledged" lists. A no-arg option present in the
+# target is ENABLED unless it is in DENY, so coverage never silently drops when
+# go-syslog adds a useful option. KNOWN records the options we've reviewed and
+# kept; DENY records extraction-reducing options we exclude. An option in
+# neither is "unclassified": still enabled (if no-arg), and surfaced by the
+# nightly for triage. Arg-taking options (e.g. WithYear) enable via cmd/gen's
+# argExpr map.
 KNOWN_3164 := WithBestEffort WithRFC3339 WithSecondFractions WithYear \
               WithLenientDay WithEmbeddedNewlines WithMessageCounter \
-              WithSequenceNumber WithCiscoHostname
-KNOWN_5424 := WithBestEffort
+              WithSequenceNumber WithCiscoHostname WithOptionalPriority
+KNOWN_5424 := WithBestEffort WithOptionalPriority
+DENY_3164  :=
+DENY_5424  := WithCompliantMsg
 
-GEN = go run ./cmd/gen -lib $(LIB) -known3164 "$(KNOWN_3164)" -known5424 "$(KNOWN_5424)"
+GEN = go run ./cmd/gen -lib $(LIB) \
+        -known3164 "$(KNOWN_3164)" -known5424 "$(KNOWN_5424)" \
+        -deny3164 "$(DENY_3164)" -deny5424 "$(DENY_5424)"
 
 # build compiles a static, self-contained report binary for the currently
 # checked-out library. It does not run it. $(1) is the go-syslog version id
