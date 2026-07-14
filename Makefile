@@ -47,9 +47,10 @@ define build
 	echo "built bin/$(2)"
 endef
 
-# Clone the library on first use.
+# Clone the library on first use. Silenced (@) so the echoed command never
+# lands on stdout, which the classify targets capture as JSONL.
 $(LIB):
-	git clone --quiet $(REPO) $(LIB)
+	@git clone --quiet $(REPO) $(LIB)
 
 .PHONY: report-release report-develop report-pr classify-release classify-develop
 
